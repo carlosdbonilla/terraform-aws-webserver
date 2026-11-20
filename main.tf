@@ -1,15 +1,3 @@
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.0"
-    }
-  }
-}
-
-provider "aws" {
-  region = var.region
-}
 
 # Look up the latest Amazon Linux AMI instead of hardcoding an ID
 data "aws_ami" "amazon_linux" {
