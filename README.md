@@ -1,3 +1,5 @@
+> **Now with HashiCorp Vault:** Terraform runs with no static AWS keys. Vault issues 15-minute, least-privilege AWS credentials for every run. See [Vault Dynamic Credentials](#vault-dynamic-credentials) below.
+
 # Terraform AWS Web Server
 
 Provisions an Apache web server on AWS EC2 using Terraform. This is a hands-on Infrastructure as Code (IaC) project covering the full Terraform lifecycle: `init` → `plan` → `apply` → `destroy`.
@@ -261,3 +263,74 @@ terraform apply
 - Refactor into reusable **modules**
 - Build a custom **VPC** and subnets instead of using the default VPC
 - Add **HTTPS** with a load balancer and certificate
+
+## Vault Dynamic Credentials
+
+Terraform requests temporary AWS credentials from **HashiCorp Vault** before each run.
+Vault's AWS secrets engine creates a short-lived IAM user that:
+
+- **expires after 15 minutes**: Vault deletes the user automatically
+- **is scoped by policy** to EC2 and S3 in `us-east-1` only (`terraform-deployer-policy.json`)
+- **can be revoked instantly** through its Vault lease
+
+```
+terraform plan / apply
+        │
+        ▼
+Vault provider ──► Vault AWS secrets engine (role: terraform-deployer)
+                          │  creates temporary IAM user + keys (15-min TTL)
+                          ▼
+AWS provider ◄──── access_key / secret_key
+        │
+        ▼
+AWS us-east-1: EC2 web server + security group
+```
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `providers.tf` | Terraform + Vault providers; the AWS provider pulls credentials from Vault |
+| `setup-vault.sh` | One-time Vault setup: AWS secrets engine, 15-min lease, guardrail role |
+| `terraform-deployer-policy.json` | Least-privilege IAM policy attached to every temporary user |
+
+### Run it
+
+```bash
+# Terminal 1: Vault in dev mode (in-memory, for demos only)
+vault server -dev -dev-root-token-id=root
+
+# Terminal 2
+export VAULT_ADDR=http://127.0.0.1:8200
+export VAULT_TOKEN=root
+export AWS_REGION=us-east-1
+./setup-vault.sh
+
+terraform init
+terraform apply
+```
+
+### See the short-lived credential
+
+```bash
+vault list sys/leases/lookup/aws/creds/terraform-deployer
+vault lease lookup aws/creds/terraform-deployer/<lease-id>   # TTL counts down from 15m
+```
+
+### Tear down
+
+```bash
+terraform destroy
+vault lease revoke -prefix aws/creds/terraform-deployer
+```
+
+### Why this matters
+
+| Static AWS keys | Vault dynamic credentials |
+|---|---|
+| Valid until manually deleted | Expire automatically after 15 minutes |
+| Often over-privileged | Scoped to only what Terraform needs |
+| Stored on laptops and in CI | Generated on demand, never stored |
+| Hard to audit and revoke | Every credential tied to a revocable lease |
+
+> Dev-mode Vault is for demonstration only. In production: a hardened Vault cluster or HCP Vault, a non-root auth method, and encrypted remote state (e.g., HCP Terraform).
